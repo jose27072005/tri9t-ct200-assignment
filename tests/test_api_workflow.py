@@ -110,3 +110,34 @@ def test_duplicate_headings_have_distinct_persisted_ids_and_parents(tmp_path, mo
         assert second["parent_id"] == roots[1]["id"]
 
     engine.dispose()
+
+
+def test_semantic_sibling_match_preserves_identity_when_heading_is_renamed(tmp_path, monkeypatch):
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    test_session = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(main, "SessionLocal", test_session)
+    monkeypatch.setattr(main, "init_db", lambda: Base.metadata.create_all(engine))
+    monkeypatch.setattr(store, "STORE", tmp_path / "generated.json")
+    pdf_v1 = tmp_path / "manual_v1.pdf"
+    pdf_v2 = tmp_path / "manual_v2.pdf"
+    pdf_v1.write_bytes(b"fixture")
+    pdf_v2.write_bytes(b"fixture")
+
+    def parse_fixture(path, ocr=False):
+        if "v2" in Path(path).name:
+            source = "1 Safety\n1.1 Maximum cuff pressure\nMaximum cuff pressure is capped at 299 mmHg."
+        else:
+            source = "1 Safety\n1.1 Cuff pressure limit\nMaximum cuff pressure is 299 mmHg."
+        return parse_text(source), source
+
+    monkeypatch.setattr(main, "extract_pdf", parse_fixture)
+    with TestClient(main.app) as client:
+        assert client.post("/ingest", json={"document_key":"semantic","version":"v1","path":str(pdf_v1)}).status_code == 200
+        old = client.get("/documents/semantic/search", params={"q":"Cuff pressure","version":"v1"}).json()[0]
+        assert client.post("/ingest", json={"document_key":"semantic","version":"v2","path":str(pdf_v2)}).status_code == 200
+        new = client.get("/documents/semantic/search", params={"q":"Maximum cuff pressure","version":"v2"}).json()[0]
+        assert new["logical_id"] == old["logical_id"]
+        assert new["changed"] is True
+
+    engine.dispose()

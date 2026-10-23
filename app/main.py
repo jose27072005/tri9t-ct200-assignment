@@ -55,7 +55,7 @@ def ingest(inp:Ingest,db:Session=Depends(dbdep)):
  except Exception as e:raise HTTPException(422,str(e))
  if db.scalar(select(DocumentVersion).where(DocumentVersion.document_key==inp.document_key,DocumentVersion.version==inp.version)):raise HTTPException(409,'Version already exists; use a new version label')
  previous=version_for(db,inp.document_key,None)
- old_by_path={}
+ old_by_path={};old_by_parent={};matched_old=set()
  if previous:
   for n in db.scalars(select(DocumentNode).where(DocumentNode.document_version_id==previous.id)):
    # Reconstruct path from ancestor ordinals/headings so repeats keep sibling occurrence identity.
@@ -63,17 +63,29 @@ def ingest(inp:Ingest,db:Session=Depends(dbdep)):
    while cur:
     parts.append(f'{cur.ordinal}:{norm(cur.heading)}');cur=cur.parent
    old_by_path['/'.join(reversed(parts))]=n
+   old_by_parent.setdefault(n.parent_id,[]).append(n)
  doc=DocumentVersion(document_key=inp.document_key,version=inp.version,source_name=p.name,source_sha256=hashlib.sha256(p.read_bytes()).hexdigest());db.add(doc);db.flush()
- def save(nodes,parent,path=''):
+ def semantic_score(a,b):
+  heading=difflib.SequenceMatcher(None,norm(a.heading),norm(b.heading)).ratio()
+  body=difflib.SequenceMatcher(None,norm(a.body),norm(b.body)).ratio() if a.body.strip() and b.body.strip() else 0.0
+  return .65*heading+.35*body
+ def save(nodes,parent,path='',old_parent_id=None):
   for i,node in enumerate(nodes):
    segment=f'{i}:{norm(node.heading)}'
    current=f'{path}/{segment}' if path else segment
    content_hash=sha(node.heading+'\n'+node.body)
-   old=old_by_path.get(current);logical=old.logical_id if old else str(uuid.uuid5(uuid.NAMESPACE_URL,inp.document_key+current))
+   old=old_by_path.get(current)
+   if old and (old.id in matched_old or old.parent_id!=old_parent_id):old=None
+   if old is None and previous:
+    candidates=[candidate for candidate in old_by_parent.get(old_parent_id,[]) if candidate.id not in matched_old]
+    scored=sorted(((semantic_score(node,candidate),candidate) for candidate in candidates),key=lambda x:x[0],reverse=True)
+    if scored and scored[0][0]>=.58 and (len(scored)==1 or scored[0][0]-scored[1][0]>=.04):old=scored[0][1]
+   if old:matched_old.add(old.id)
+   logical=old.logical_id if old else str(uuid.uuid5(uuid.NAMESPACE_URL,inp.document_key+current))
    changed=bool(old and old.content_hash!=content_hash)
    row=DocumentNode(logical_id=logical,document_version_id=doc.id,parent_id=parent,ordinal=i,heading=node.heading,level=node.level,body=node.body,content_hash=content_hash,changed=changed,change_kind='content' if changed else ('new' if previous and not old else None));db.add(row);db.flush()
-   save(node.children,row.id,current)
- save(parsed,None);db.commit()
+   save(node.children,row.id,current,old.id if old else None)
+ save(parsed,None,old_parent_id=None);db.commit()
  return {'document_key':inp.document_key,'version':inp.version,'source_sha256':doc.source_sha256,'node_count':len(flatten(parsed))}
 @app.post('/ingest-upload')
 def ingest_upload(document_key:str,version:str,file:UploadFile=File(...),ocr:bool=False,db:Session=Depends(dbdep)):
