@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from contextlib import asynccontextmanager
 from pathlib import Path
-import hashlib,uuid,difflib,os
+import hashlib,uuid,difflib,re
 from .db import SessionLocal,init_db
 from .models import DocumentVersion,DocumentNode,Selection,SelectionItem
 from .parser import extract_pdf,flatten,sha,norm
@@ -74,10 +74,12 @@ def ingest(inp:Ingest,db:Session=Depends(dbdep)):
    row=DocumentNode(logical_id=logical,document_version_id=doc.id,parent_id=parent,ordinal=i,heading=node.heading,level=node.level,body=node.body,content_hash=content_hash,changed=changed,change_kind='content' if changed else ('new' if previous and not old else None));db.add(row);db.flush()
    save(node.children,row.id,current)
  save(parsed,None);db.commit()
- return {'document_key':inp.document_key,'version':inp.version,'source_sha256':doc.source_sha256,'node_count':db.scalar(select(DocumentNode).where(DocumentNode.document_version_id==doc.id).count()) if False else len(flatten(parsed))}
+ return {'document_key':inp.document_key,'version':inp.version,'source_sha256':doc.source_sha256,'node_count':len(flatten(parsed))}
 @app.post('/ingest-upload')
 def ingest_upload(document_key:str,version:str,file:UploadFile=File(...),ocr:bool=False,db:Session=Depends(dbdep)):
- target=Path('data')/f'{document_key}-{version}-{file.filename}';target.parent.mkdir(exist_ok=True)
+ safe=re.compile(r'[^A-Za-z0-9._-]+')
+ parts=[safe.sub('_',x).strip('._') or 'upload' for x in (document_key,version,Path(file.filename or 'upload.pdf').name)]
+ target=Path('data')/('-'.join(parts));target.parent.mkdir(parents=True,exist_ok=True)
  target.write_bytes(file.file.read());return ingest(Ingest(document_key=document_key,version=version,path=str(target),ocr=ocr),db)
 @app.get('/documents/{key}/versions')
 def versions(key:str,db:Session=Depends(dbdep)):
@@ -122,7 +124,7 @@ def get_selection(selection_id:int,db:Session=Depends(dbdep)):
  items=list(db.scalars(select(SelectionItem).where(SelectionItem.selection_id==s.id)))
  return {'id':s.id,'name':s.name,'document_key':s.document_key,'version':v.version,'items':[{'node_id':i.node_id,'logical_id':i.node_logical_id,'heading':i.heading_snapshot,'content_hash':i.content_hash,'text':i.text_snapshot} for i in items]}
 def generation_staleness(record,db):
- stale=[];current=version_for(db,record['document_key'],None)
+ current=version_for(db,record['document_key'],None)
  impacted={}
  for src in record['sources']:
   n=db.scalars(select(DocumentNode).where(DocumentNode.document_version_id==current.id,DocumentNode.logical_id==src['logical_id'])).first() if current else None
