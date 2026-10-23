@@ -23,7 +23,7 @@ def heading_level(line):
  if m:return 3,m.group(2).strip()
  if ALLCAPS.match(line.strip()) and len(line.strip())<=80:return 1,line.strip().title()
  return None
-def parse_text(text:str)->list[ParsedNode]:
+def parse_text(text:str,heading_hints:set[str]|None=None)->list[ParsedNode]:
  roots=[];stack=[];current=None;body=[];preamble=[]
  def flush():
   nonlocal body
@@ -34,6 +34,7 @@ def parse_text(text:str)->list[ParsedNode]:
   line=re.sub(r'\s+',' ',raw).strip()
   if not line or re.fullmatch(r'\d{1,4}',line) or ('CardioTrack' in line and len(line)<25):continue
   h=heading_level(line)
+  if h and heading_hints is not None and norm(line) not in heading_hints:h=None
   if h:
    flush();level,title=h;node=ParsedNode(title,level)
    while stack and stack[-1].level>=level:stack.pop()
@@ -59,7 +60,24 @@ def extract_pdf(path:str|Path,ocr:bool=False):
  if empty and not ocr:raise ValueError(f'Image-only pages require OCR mode: {empty}')
  text='\n'.join(pages)
  if not text.strip():raise ValueError('PDF yielded no text')
- return parse_text(text),text
+ # Font weight disambiguates real section headings from numbered result lists.
+ hints=None if empty else set()
+ try:
+  import pymupdf
+  if hints is None: raise RuntimeError("OCR text has no embedded font metadata")
+  doc=pymupdf.open(str(path))
+  for page in doc:
+   for block in page.get_text('dict').get('blocks',[]):
+    for line in block.get('lines',[]):
+     spans=line.get('spans',[])
+     value=' '.join(span.get('text','') for span in spans).strip()
+     if value and any(('bold' in span.get('font','').casefold()) or (span.get('flags',0)&16) for span in spans):hints.add(norm(value))
+ except RuntimeError:
+  pass
+ except Exception:
+  hints=None
+ return parse_text(text,hints),text
+
 def flatten(nodes,parent_path=''):
  out=[]
  for i,n in enumerate(nodes):
