@@ -8,9 +8,11 @@ FastAPI backend for CT-200 PDF ingestion, hierarchical browsing, immutable docum
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env  # optional; set an LLM API key to generate tests
-uvicorn app.main:app --reload
+cp .env.example .env  # optional; add an LLM API key to generate tests
+uvicorn --env-file .env app.main:app --reload
 ```
+
+If you do not create a `.env` file, start with `uvicorn app.main:app --reload` and configure any needed environment variables in your shell.
 
 SQLite defaults to `./tri9t.db`; generated output defaults to `./generated_outputs.json`. Set `DATABASE_URL`, `OUTPUT_STORE`, `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL` as needed. The default LLM endpoint is Groq's OpenAI-compatible chat completions endpoint. No key is required for ingestion or browsing. Generated outputs are stored in an atomic JSON file per assignment allowance.
 
