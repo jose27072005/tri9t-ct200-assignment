@@ -2,15 +2,18 @@ from fastapi import FastAPI,HTTPException,Depends,UploadFile,File
 from pydantic import BaseModel,Field
 from sqlalchemy.orm import Session
 from sqlalchemy import select
+from contextlib import asynccontextmanager
 from pathlib import Path
 import hashlib,uuid,difflib,os
 from .db import SessionLocal,init_db
 from .models import DocumentVersion,DocumentNode,Selection,SelectionItem
 from .parser import extract_pdf,flatten,sha,norm
 from . import store,llm
-app=FastAPI(title='Tri9T CT-200 Traceability API',version='1.0.0')
-@app.on_event('startup')
-def startup():init_db()
+@asynccontextmanager
+async def lifespan(_app):
+ init_db()
+ yield
+app=FastAPI(title='Tri9T CT-200 Traceability API',version='1.0.0',lifespan=lifespan)
 def dbdep():
  db=SessionLocal()
  try:yield db
@@ -27,6 +30,21 @@ def tree_json(n,full=False):
  d={'id':n.id,'logical_id':n.logical_id,'heading':n.heading,'level':n.level,'parent_id':n.parent_id,'content_hash':n.content_hash,'changed':n.changed,'change_kind':n.change_kind,'children':[tree_json(c,full) for c in n.children]}
  if full:d['text']=n.body
  return d
+def subtree_text(n):
+ pieces=[n.heading]
+ if n.body.strip():pieces.append(n.body.strip())
+ for child in n.children:
+  pieces.append(subtree_text(child))
+ return '\n'.join(pieces)
+def subtree_nodes(n):
+ nodes=[n]
+ for child in n.children:nodes.extend(subtree_nodes(child))
+ return nodes
+def subtree_prompt(n):
+ lines=[f'[{n.id}] {n.heading}']
+ if n.body.strip():lines.append(n.body.strip())
+ for child in n.children:lines.append(subtree_prompt(child))
+ return '\n'.join(lines)
 @app.get('/health')
 def health():return {'status':'ok'}
 @app.post('/ingest')
@@ -48,7 +66,9 @@ def ingest(inp:Ingest,db:Session=Depends(dbdep)):
  doc=DocumentVersion(document_key=inp.document_key,version=inp.version,source_name=p.name,source_sha256=hashlib.sha256(p.read_bytes()).hexdigest());db.add(doc);db.flush()
  def save(nodes,parent,path=''):
   for i,node in enumerate(nodes):
-   current=f'{path}/{i}:{norm(node.heading)}';content_hash=sha(node.heading+'\n'+node.body)
+   segment=f'{i}:{norm(node.heading)}'
+   current=f'{path}/{segment}' if path else segment
+   content_hash=sha(node.heading+'\n'+node.body)
    old=old_by_path.get(current);logical=old.logical_id if old else str(uuid.uuid5(uuid.NAMESPACE_URL,inp.document_key+current))
    changed=bool(old and old.content_hash!=content_hash)
    row=DocumentNode(logical_id=logical,document_version_id=doc.id,parent_id=parent,ordinal=i,heading=node.heading,level=node.level,body=node.body,content_hash=content_hash,changed=changed,change_kind='content' if changed else ('new' if previous and not old else None));db.add(row);db.flush()
@@ -90,24 +110,43 @@ def create_selection(inp:SelectionIn,db:Session=Depends(dbdep)):
  rows=list(db.scalars(select(DocumentNode).where(DocumentNode.document_version_id==v.id,DocumentNode.id.in_(inp.node_ids))))
  if len(rows)!=len(set(inp.node_ids)):raise HTTPException(422,'one or more node IDs are invalid for that version')
  s=Selection(name=inp.name,document_key=inp.document_key,document_version_id=v.id);db.add(s);db.flush()
- for n in rows:db.add(SelectionItem(selection_id=s.id,node_id=n.id,node_logical_id=n.logical_id,content_hash=n.content_hash,heading_snapshot=n.heading,text_snapshot=n.heading+'\n'+n.body))
+ for n in rows:
+  snapshot=subtree_text(n)
+  db.add(SelectionItem(selection_id=s.id,node_id=n.id,node_logical_id=n.logical_id,content_hash=sha(snapshot),heading_snapshot=n.heading,text_snapshot=snapshot))
  db.commit();return {'id':s.id,'name':s.name,'version':v.version,'node_ids':inp.node_ids}
+@app.get('/selections/{selection_id}')
+def get_selection(selection_id:int,db:Session=Depends(dbdep)):
+ s=db.get(Selection,selection_id)
+ if not s:raise HTTPException(404,'selection not found')
+ v=db.get(DocumentVersion,s.document_version_id)
+ items=list(db.scalars(select(SelectionItem).where(SelectionItem.selection_id==s.id)))
+ return {'id':s.id,'name':s.name,'document_key':s.document_key,'version':v.version,'items':[{'node_id':i.node_id,'logical_id':i.node_logical_id,'heading':i.heading_snapshot,'content_hash':i.content_hash,'text':i.text_snapshot} for i in items]}
 def generation_staleness(record,db):
  stale=[];current=version_for(db,record['document_key'],None)
+ impacted={}
  for src in record['sources']:
   n=db.scalars(select(DocumentNode).where(DocumentNode.document_version_id==current.id,DocumentNode.logical_id==src['logical_id'])).first() if current else None
-  if not n or n.content_hash!=src['content_hash']:
-   stale.append({'logical_id':src['logical_id'],'heading':src['heading'],'current_node_id':n.id if n else None,'changed':True})
- return {'stale':bool(stale),'current_version':current.version if current else None,'impacted_sources':stale}
+  if not n or sha(subtree_text(n))!=src['content_hash']:
+   impacted[src['logical_id']]={'logical_id':src['logical_id'],'heading':src['heading'],'current_node_id':n.id if n else None,'changed':True,'reason':'selected subtree changed or disappeared'}
+   for member in src.get('included_nodes',[]):
+    latest=db.scalars(select(DocumentNode).where(DocumentNode.document_version_id==current.id,DocumentNode.logical_id==member['logical_id'])).first() if current else None
+    if not latest or latest.content_hash!=member['content_hash']:
+     impacted[member['logical_id']]={'logical_id':member['logical_id'],'heading':member['heading'],'current_node_id':latest.id if latest else None,'changed':True,'reason':'node changed or disappeared'}
+ return {'stale':bool(impacted),'current_version':current.version if current else None,'impacted_sources':list(impacted.values())}
 @app.post('/generations')
 def generate(inp:GenerateIn,db:Session=Depends(dbdep)):
  s=db.get(Selection,inp.selection_id)
  if not s:raise HTTPException(404,'selection not found')
  items=list(db.scalars(select(SelectionItem).where(SelectionItem.selection_id==s.id)))
- text='\n\n'.join(f'[{i.node_id}] {i.text_snapshot}' for i in items)
- try:cases,model,attempts=llm.generate(text,[i.node_id for i in items])
+ selected_nodes=[db.get(DocumentNode,i.node_id) for i in items]
+ text='\n\n'.join(subtree_prompt(n) for n in selected_nodes)
+ allowed_node_ids=[n.id for root in selected_nodes for n in subtree_nodes(root)]
+ try:cases,model,attempts,provider=llm.generate(text,allowed_node_ids)
  except Exception as e:raise HTTPException(502,str(e))
- record={'id':str(uuid.uuid4()),'selection_id':s.id,'selection_name':s.name,'document_key':s.document_key,'source_version':db.get(DocumentVersion,s.document_version_id).version,'created_at':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(),'model':model,'attempts':attempts,'sources':[{'node_id':i.node_id,'logical_id':i.node_logical_id,'heading':i.heading_snapshot,'content_hash':i.content_hash,'text':i.text_snapshot} for i in items],'cases':[c.model_dump() for c in cases.cases]}
+ sources=[]
+ for i,selected in zip(items,selected_nodes):
+  sources.append({'node_id':i.node_id,'logical_id':i.node_logical_id,'heading':i.heading_snapshot,'content_hash':i.content_hash,'text':i.text_snapshot,'included_nodes':[{'node_id':n.id,'logical_id':n.logical_id,'heading':n.heading,'content_hash':n.content_hash} for n in subtree_nodes(selected)]})
+ record={'id':str(uuid.uuid4()),'selection_id':s.id,'selection_name':s.name,'document_key':s.document_key,'source_version':db.get(DocumentVersion,s.document_version_id).version,'created_at':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(),'provider':provider,'model':model,'attempts':attempts,'sources':sources,'cases':[c.model_dump() for c in cases.cases]}
  store.put(record);return {**record,**generation_staleness(record,db)}
 @app.get('/generations')
 def generations(selection_id:int|None=None,node_id:int|None=None,db:Session=Depends(dbdep)):
@@ -116,7 +155,7 @@ def generations(selection_id:int|None=None,node_id:int|None=None,db:Session=Depe
  if node_id is not None:
   n=db.get(DocumentNode,node_id)
   if not n:raise HTTPException(404,'node not found')
-  records=[r for r in records if any(s['logical_id']==n.logical_id for s in r['sources'])]
+  records=[r for r in records if any(s['logical_id']==n.logical_id or any(m['logical_id']==n.logical_id for m in s.get('included_nodes',[])) for s in r['sources'])]
  return [{**r,**generation_staleness(r,db)} for r in records]
 @app.get('/generations/{generation_id}')
 def generation(generation_id:str,db:Session=Depends(dbdep)):

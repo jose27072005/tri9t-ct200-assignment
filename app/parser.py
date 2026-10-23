@@ -51,10 +51,10 @@ def extract_pdf(path:str|Path,ocr:bool=False):
   if not t:empty.append(i+1)
  if empty and ocr:
   try:
-   import fitz,pytesseract,io
+   import pymupdf,pytesseract,io
    from PIL import Image
-   doc=fitz.open(str(path))
-   for i in empty:pages[i-1]=pytesseract.image_to_string(Image.open(io.BytesIO(doc[i-1].get_pixmap(matrix=fitz.Matrix(2,2)).tobytes('png'))))
+   doc=pymupdf.open(str(path))
+   for i in empty:pages[i-1]=pytesseract.image_to_string(Image.open(io.BytesIO(doc[i-1].get_pixmap(matrix=pymupdf.Matrix(2,2)).tobytes('png'))))
   except Exception as e:raise ValueError(f'OCR fallback unavailable or failed for pages {empty}: {e}')
  if empty and not ocr:raise ValueError(f'Image-only pages require OCR mode: {empty}')
  text='\n'.join(pages)
