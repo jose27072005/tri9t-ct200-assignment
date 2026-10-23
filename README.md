@@ -12,9 +12,11 @@ cp .env.example .env  # optional; add an LLM API key to generate tests
 uvicorn --env-file .env app.main:app --reload
 ```
 
+OCR also requires the Tesseract executable. On macOS install it with `brew install tesseract`; on Debian/Ubuntu use `sudo apt-get install tesseract-ocr`. The Python OCR libraries are installed from `requirements.txt`.
+
 If you do not create a `.env` file, start with `uvicorn app.main:app --reload` and configure any needed environment variables in your shell.
 
-SQLite defaults to `./tri9t.db`; generated output defaults to `./generated_outputs.json`. Set `DATABASE_URL`, `OUTPUT_STORE`, `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL` as needed. The default LLM endpoint is Groq's OpenAI-compatible chat completions endpoint. No key is required for ingestion or browsing. Generated outputs are stored in an atomic JSON file per assignment allowance.
+SQLite defaults to `./tri9t.db`; generated output defaults to `./generated_outputs.json`. Set `DATABASE_URL`, `OUTPUT_STORE`, `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL` as needed. The default LLM endpoint is Groq's OpenAI-compatible chat completions endpoint. Optional `LLM_FALLBACK_API_KEY`, `LLM_FALLBACK_BASE_URL`, and `LLM_FALLBACK_MODEL` configure one fallback-provider call after the primary retry. Generation needs at least one provider key; ingestion and browsing do not. Generated outputs are stored in an atomic JSON file per assignment allowance.
 
 ## API workflow
 
@@ -34,6 +36,8 @@ curl -X POST localhost:8000/selections -H 'Content-Type: application/json' \
 curl -X POST localhost:8000/generations -H 'Content-Type: application/json' -d '{"selection_id":1}'
 ```
 
+Retrieve the persisted snapshot with `GET /selections/{selection_id}`. It includes the pinned version, exact selected subtree text, and its hash; the snapshot remains v1 after v2 is ingested.
+
 Re-ingest v2 without overwriting v1, then inspect `/nodes/{id}/diff`, or retrieve prior generations via `/generations?selection_id=1` or `/generations?node_id=1`. Responses include staleness and impacted source nodes relative to the latest ingested version. Selections retain exact text snapshots and version/node pairs.
 
 ```sh
@@ -42,7 +46,7 @@ curl -X POST localhost:8000/ingest -H 'Content-Type: application/json' \
 curl localhost:8000/generations?selection_id=1
 ```
 
-Image-only pages fail explicitly unless `ocr:true`; optional OCR requires PyMuPDF, Pillow and Tesseract installed. This prevents silently empty extraction.
+Image-only pages fail explicitly unless `ocr:true`; OCR uses PyMuPDF, Pillow, pytesseract, and the Tesseract executable. This prevents silently empty extraction.
 
 ## Tests
 
@@ -50,4 +54,4 @@ Image-only pages fail explicitly unless `ocr:true`; optional OCR requires PyMuPD
 pytest -q
 ```
 
-Parser tests cover duplicate headings under separate parents, skipped numeric levels, repeated running headers/page numbers, and lettered lists. They test synthetic structures because the assignment PDF does not enumerate its “irregularities listed above” and the actual CT-200 data package is missing. These are not validation results on the manuals.
+Tests cover duplicate headings under separate parents, skipped numeric levels, repeated running headers/page numbers, lettered lists, invalid LLM citations, bounded retry/fallback, and a synthetic v1 → selection → generation → v2 → stale retrieval flow. They use synthetic structures because the assignment PDF does not enumerate its “irregularities listed above” and the actual CT-200 data package is missing. They are not validation results on the manuals.
