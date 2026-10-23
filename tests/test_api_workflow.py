@@ -18,6 +18,13 @@ def test_versioned_selection_generation_and_staleness(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "init_db", lambda: Base.metadata.create_all(engine))
     monkeypatch.setattr(store, "STORE", tmp_path / "generated.json")
 
+    def table_fixture(path):
+        seconds = "2" if "v2" in Path(path).name else "3"
+        return [{"page_number": 1, "heading_context": "Safety", "caption": None,
+                 "bbox": [0, 0, 100, 100], "rows": [["Action", "Seconds"], ["Deflate", seconds]],
+                 "row_count": 2, "column_count": 2}]
+    monkeypatch.setattr(main, "extract_tables", table_fixture)
+
     def parse_fixture(path, ocr=False):
         version_two = "v2" in Path(path).name
         body = "Deflate within two seconds." if version_two else "Deflate within three seconds."
@@ -47,6 +54,8 @@ def test_versioned_selection_generation_and_staleness(tmp_path, monkeypatch):
         roots = client.get("/documents/ct-200/nodes?version=v1").json()
         section = roots[0]
         requirement = section["children"][0]
+        section_detail = client.get(f"/nodes/{section['id']}").json()
+        assert section_detail["tables"][0]["rows"][1] == ["Deflate", "3"]
         assert requirement["heading"] == "Pressure limit"
 
         selection = client.post("/selections", json={
@@ -57,6 +66,7 @@ def test_versioned_selection_generation_and_staleness(tmp_path, monkeypatch):
         pinned = client.get(f"/selections/{selection.json()['id']}").json()
         assert pinned["version"] == "v1"
         assert "Deflate within three seconds" in pinned["items"][0]["text"]
+        assert "Deflate | 3" in pinned["items"][0]["text"]
         generation = client.post("/generations", json={"selection_id": selection.json()["id"]})
         assert generation.status_code == 200
         generation_body = generation.json()
@@ -67,7 +77,9 @@ def test_versioned_selection_generation_and_staleness(tmp_path, monkeypatch):
         assert v2.status_code == 200
         roots_v2 = client.get("/documents/ct-200/nodes").json()
         assert roots_v2[0]["logical_id"] == section["logical_id"]
-        assert roots_v2[0]["changed"] is False
+        assert roots_v2[0]["changed"] is True
+        root_v2_detail = client.get(f"/nodes/{roots_v2[0]['id']}").json()
+        assert root_v2_detail["tables"][0]["rows"][1] == ["Deflate", "2"]
         diff = client.get(f"/nodes/{requirement['id']}/diff").json()
         assert diff["versions"][-1]["changed"] is True
         assert any("three seconds" in line for line in diff["diff"])
@@ -97,6 +109,7 @@ def test_duplicate_headings_have_distinct_persisted_ids_and_parents(tmp_path, mo
     monkeypatch.setattr(store, "STORE", tmp_path / "generated.json")
     source = "1 Safety\nCaution.\n1.1 Warning\nSafety warning.\n2 Operation\n2.1 Warning\nOperation warning."
     monkeypatch.setattr(main, "extract_pdf", lambda path, ocr=False: (parse_text(source), source))
+    monkeypatch.setattr(main, "extract_tables", lambda path: [])
     pdf = tmp_path / "duplicate-headings.pdf"
     pdf.write_bytes(b"fixture")
 
@@ -132,6 +145,7 @@ def test_semantic_sibling_match_preserves_identity_when_heading_is_renamed(tmp_p
         return parse_text(source), source
 
     monkeypatch.setattr(main, "extract_pdf", parse_fixture)
+    monkeypatch.setattr(main, "extract_tables", lambda path: [])
     with TestClient(main.app) as client:
         assert client.post("/ingest", json={"document_key":"semantic","version":"v1","path":str(pdf_v1)}).status_code == 200
         old = client.get("/documents/semantic/search", params={"q":"Cuff pressure","version":"v1"}).json()[0]

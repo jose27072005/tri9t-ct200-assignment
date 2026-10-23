@@ -4,10 +4,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from contextlib import asynccontextmanager
 from pathlib import Path
-import hashlib,uuid,difflib,re
+import hashlib,uuid,difflib,re,json
 from .db import SessionLocal,init_db
-from .models import DocumentVersion,DocumentNode,Selection,SelectionItem
-from .parser import extract_pdf,flatten,sha,norm
+from .models import DocumentVersion,DocumentNode,DocumentTable,Selection,SelectionItem
+from .parser import extract_pdf,extract_tables,flatten,sha,norm
 from . import store,llm
 @asynccontextmanager
 async def lifespan(_app):
@@ -28,11 +28,14 @@ def version_for(db,key,version):
  return db.scalars(q.order_by(DocumentVersion.id.desc())).first()
 def tree_json(n,full=False):
  d={'id':n.id,'logical_id':n.logical_id,'heading':n.heading,'level':n.level,'parent_id':n.parent_id,'content_hash':n.content_hash,'changed':n.changed,'change_kind':n.change_kind,'children':[tree_json(c,full) for c in n.children]}
+ d['tables']=[{'id':t.id,'page_number':t.page_number,'heading_context':t.heading_context,'caption':t.caption,'row_count':len(json.loads(t.cells_json)),'column_count':max((len(row) for row in json.loads(t.cells_json)),default=0),'content_hash':t.content_hash,**({'rows':json.loads(t.cells_json),'bbox':json.loads(t.bbox_json)} if full else {})} for t in n.tables]
  if full:d['text']=n.body
  return d
+def table_text(rows):return '\n'.join(' | '.join(str(cell) for cell in row) for row in rows)
 def subtree_text(n):
  pieces=[n.heading]
  if n.body.strip():pieces.append(n.body.strip())
+ for table in n.tables:pieces.append('[Table]\n'+table_text(json.loads(table.cells_json)))
  for child in n.children:
   pieces.append(subtree_text(child))
  return '\n'.join(pieces)
@@ -43,6 +46,7 @@ def subtree_nodes(n):
 def subtree_prompt(n):
  lines=[f'[{n.id}] {n.heading}']
  if n.body.strip():lines.append(n.body.strip())
+ for table in n.tables:lines.append(f"[Table on page {table.page_number}]\n"+table_text(json.loads(table.cells_json)))
  for child in n.children:lines.append(subtree_prompt(child))
  return '\n'.join(lines)
 @app.get('/health')
@@ -51,7 +55,7 @@ def health():return {'status':'ok'}
 def ingest(inp:Ingest,db:Session=Depends(dbdep)):
  p=Path(inp.path)
  if not p.is_file():raise HTTPException(404,'PDF path not found')
- try:parsed,raw=extract_pdf(p,inp.ocr)
+ try:parsed,raw=extract_pdf(p,inp.ocr);tables=extract_tables(p)
  except Exception as e:raise HTTPException(422,str(e))
  if db.scalar(select(DocumentVersion).where(DocumentVersion.document_key==inp.document_key,DocumentVersion.version==inp.version)):raise HTTPException(409,'Version already exists; use a new version label')
  previous=version_for(db,inp.document_key,None)
@@ -65,6 +69,10 @@ def ingest(inp:Ingest,db:Session=Depends(dbdep)):
    old_by_path['/'.join(reversed(parts))]=n
    old_by_parent.setdefault(n.parent_id,[]).append(n)
  doc=DocumentVersion(document_key=inp.document_key,version=inp.version,source_name=p.name,source_sha256=hashlib.sha256(p.read_bytes()).hexdigest());db.add(doc);db.flush()
+ table_by_heading={}
+ for t in tables:
+  if t['heading_context']:table_by_heading.setdefault(norm(t['heading_context']),[]).append(t)
+ saved_by_heading={}
  def semantic_score(a,b):
   heading=difflib.SequenceMatcher(None,norm(a.heading),norm(b.heading)).ratio()
   body=difflib.SequenceMatcher(None,norm(a.body),norm(b.body)).ratio() if a.body.strip() and b.body.strip() else 0.0
@@ -73,7 +81,8 @@ def ingest(inp:Ingest,db:Session=Depends(dbdep)):
   for i,node in enumerate(nodes):
    segment=f'{i}:{norm(node.heading)}'
    current=f'{path}/{segment}' if path else segment
-   content_hash=sha(node.heading+'\n'+node.body)
+   own_tables=table_by_heading.get(norm(node.heading),[])
+   content_hash=sha(node.heading+'\n'+node.body+'\n'+'\n'.join(table_text(t['rows']) for t in own_tables))
    old=old_by_path.get(current)
    if old and (old.id in matched_old or old.parent_id!=old_parent_id):old=None
    if old is None and previous:
@@ -84,9 +93,15 @@ def ingest(inp:Ingest,db:Session=Depends(dbdep)):
    logical=old.logical_id if old else str(uuid.uuid5(uuid.NAMESPACE_URL,inp.document_key+current))
    changed=bool(old and old.content_hash!=content_hash)
    row=DocumentNode(logical_id=logical,document_version_id=doc.id,parent_id=parent,ordinal=i,heading=node.heading,level=node.level,body=node.body,content_hash=content_hash,changed=changed,change_kind='content' if changed else ('new' if previous and not old else None));db.add(row);db.flush()
+   saved_by_heading.setdefault(norm(node.heading),[]).append(row)
    save(node.children,row.id,current,old.id if old else None)
- save(parsed,None,old_parent_id=None);db.commit()
- return {'document_key':inp.document_key,'version':inp.version,'source_sha256':doc.source_sha256,'node_count':len(flatten(parsed))}
+ save(parsed,None,old_parent_id=None)
+ for t in tables:
+  candidates=saved_by_heading.get(norm(t['heading_context'] or ''),[])
+  owner=candidates[0] if candidates else None
+  db.add(DocumentTable(document_version_id=doc.id,node_id=owner.id if owner else None,page_number=t['page_number'],heading_context=t['heading_context'],caption=t['caption'],bbox_json=json.dumps(t['bbox']),cells_json=json.dumps(t['rows'],ensure_ascii=False),content_hash=sha(table_text(t['rows']))))
+ db.commit()
+ return {'document_key':inp.document_key,'version':inp.version,'source_sha256':doc.source_sha256,'node_count':len(flatten(parsed)),'table_count':len(tables)}
 @app.post('/ingest-upload')
 def ingest_upload(document_key:str,version:str,file:UploadFile=File(...),ocr:bool=False,db:Session=Depends(dbdep)):
  safe=re.compile(r'[^A-Za-z0-9._-]+')
@@ -101,6 +116,12 @@ def roots(key:str,version:str|None=None,db:Session=Depends(dbdep)):
  v=version_for(db,key,version)
  if not v:raise HTTPException(404,'document version not found')
  return [tree_json(n) for n in db.scalars(select(DocumentNode).where(DocumentNode.document_version_id==v.id,DocumentNode.parent_id.is_(None)).order_by(DocumentNode.ordinal))]
+@app.get('/documents/{key}/tables')
+def tables(key:str,version:str|None=None,db:Session=Depends(dbdep)):
+ v=version_for(db,key,version)
+ if not v:raise HTTPException(404,'document version not found')
+ rows=db.scalars(select(DocumentTable).where(DocumentTable.document_version_id==v.id).order_by(DocumentTable.page_number,DocumentTable.id))
+ return [{'id':t.id,'node_id':t.node_id,'page_number':t.page_number,'heading_context':t.heading_context,'caption':t.caption,'bbox':json.loads(t.bbox_json),'rows':json.loads(t.cells_json),'content_hash':t.content_hash} for t in rows]
 @app.get('/nodes/{node_id}')
 def node(node_id:int,db:Session=Depends(dbdep)):
  n=db.get(DocumentNode,node_id)

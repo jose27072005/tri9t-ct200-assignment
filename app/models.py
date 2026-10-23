@@ -29,6 +29,19 @@ class DocumentNode(Base):
     document: Mapped[DocumentVersion]=relationship(back_populates='nodes')
     parent: Mapped['DocumentNode|None']=relationship(remote_side='DocumentNode.id',back_populates='children')
     children: Mapped[list['DocumentNode']]=relationship(back_populates='parent',order_by='DocumentNode.ordinal')
+    tables: Mapped[list['DocumentTable']]=relationship(back_populates='node',order_by='DocumentTable.page_number',cascade='all, delete-orphan')
+class DocumentTable(Base):
+    __tablename__='document_tables'
+    id: Mapped[int]=mapped_column(Integer,primary_key=True)
+    document_version_id: Mapped[int]=mapped_column(ForeignKey('document_versions.id'),index=True)
+    node_id: Mapped[int|None]=mapped_column(ForeignKey('document_nodes.id'),nullable=True,index=True)
+    page_number: Mapped[int]=mapped_column(Integer)
+    heading_context: Mapped[str|None]=mapped_column(Text,nullable=True)
+    caption: Mapped[str|None]=mapped_column(Text,nullable=True)
+    bbox_json: Mapped[str]=mapped_column(Text)
+    cells_json: Mapped[str]=mapped_column(Text)
+    content_hash: Mapped[str]=mapped_column(String(64),index=True)
+    node: Mapped[DocumentNode|None]=relationship(back_populates='tables')
 class Selection(Base):
     __tablename__='selections'
     id: Mapped[int]=mapped_column(Integer,primary_key=True)

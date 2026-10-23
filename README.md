@@ -1,6 +1,6 @@
 # Tri9T AI internship assignment: CT-200 traceability backend
 
-FastAPI backend for CT-200 PDF ingestion, hierarchical browsing, immutable document versions, pinned selections, QA generation, provenance, and stale-impact queries. The supplied CT-200 manuals are locally available as `data/ct200_manual_v1.pdf` and `data/ct200_manual_v2.pdf`. They are excluded from Git because they are source materials, not project deliverables. The parser has been exercised on both manuals; observed findings and limitations are in `docs/APPROACH.md`.
+FastAPI backend for CT-200 PDF ingestion, hierarchical browsing, immutable document versions, pinned selections, QA generation, provenance, and stale-impact queries. The supplied CT-200 manuals are source materials and are intentionally excluded from Git. To reproduce ingestion after cloning, copy the assignment's v1 and v2 PDFs to `data/ct200_manual_v1.pdf` and `data/ct200_manual_v2.pdf`; alternatively upload them through `/ingest-upload`. The parser and table extractor have been exercised on both manuals; observed findings and limitations are in `docs/APPROACH.md`.
 
 ## Setup
 
@@ -14,7 +14,7 @@ uvicorn --env-file .env app.main:app --reload
 
 OCR also requires the Tesseract executable. On macOS install it with `brew install tesseract`; on Debian/Ubuntu use `sudo apt-get install tesseract-ocr`. The Python OCR libraries are installed from `requirements.txt`.
 
-If you do not create a `.env` file, start with `uvicorn app.main:app --reload` and configure any needed environment variables in your shell.
+If you do not create a `.env` file, start with `uvicorn app.main:app --reload` and configure any needed environment variables in your shell. OCR of image-only pages also needs the Tesseract executable.
 
 SQLite defaults to `./tri9t.db`; generated output defaults to `./generated_outputs.json`. Set `DATABASE_URL`, `OUTPUT_STORE`, `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL` as needed. The default LLM endpoint is Groq's OpenAI-compatible chat completions endpoint. Optional `LLM_FALLBACK_API_KEY`, `LLM_FALLBACK_BASE_URL`, and `LLM_FALLBACK_MODEL` configure one fallback-provider call after the primary retry. Generation needs at least one provider key; ingestion and browsing do not. Generated outputs are stored in an atomic JSON file per assignment allowance.
 
@@ -26,9 +26,10 @@ Open `/docs` for the interactive API. Example commands:
 curl -X POST localhost:8000/ingest -H 'Content-Type: application/json' \
   -d '{"document_key":"ct-200","version":"v1","path":"data/ct200_manual_v1.pdf"}'
 curl 'localhost:8000/documents/ct-200/nodes?version=v1'
+curl 'localhost:8000/documents/ct-200/tables?version=v1'
 ```
 
-Select node IDs returned for v1, create a pinned selection, then generate cases:
+Select node IDs returned for v1, create a pinned selection, then generate cases. The node tree includes extracted tables; `GET /documents/{key}/tables?version=...` returns cells, source page, heading context, bounding box, and hash. Table rows are included in node hashes and the text sent for QA generation.
 
 ```sh
 curl -X POST localhost:8000/selections -H 'Content-Type: application/json' \
@@ -54,4 +55,4 @@ Image-only pages fail explicitly unless `ocr:true`; OCR uses PyMuPDF, Pillow, py
 pytest -q
 ```
 
-The suite covers duplicate headings and parents, skipped numeric levels, repeated headers and page numbers, lettered and numbered lists, out-of-order section numbering, OCR of image-only pages, semantic sibling matching, invalid citations, bounded retry/fallback, and synthetic versioned API behavior. The actual v1/v2 manuals were also ingested through the API in an isolated SQLite database; a local generation stub verified pinned source text, changed-node diff, and stale-impact retrieval. This validates ingestion and traceability, not clinical correctness or live-provider output.
+The suite covers duplicate headings and parents, skipped numeric levels, repeated headers and page numbers, lettered and numbered lists, out-of-order section numbering, OCR of image-only pages, vector-table extraction, semantic sibling matching, invalid citations, bounded retry/fallback, and synthetic versioned API behavior. The actual v1/v2 manuals were also ingested through the API in an isolated SQLite database; a local generation stub verified pinned source text, changed-node diff, and stale-impact retrieval. This validates ingestion and traceability, not clinical correctness or live-provider output.
