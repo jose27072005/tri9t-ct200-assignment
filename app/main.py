@@ -168,6 +168,35 @@ def generation_staleness(record,db):
     if not latest or latest.content_hash!=member['content_hash']:
      impacted[member['logical_id']]={'logical_id':member['logical_id'],'heading':member['heading'],'current_node_id':latest.id if latest else None,'changed':True,'reason':'node changed or disappeared'}
  return {'stale':bool(impacted),'current_version':current.version if current else None,'impacted_sources':list(impacted.values())}
+def generation_grounding(record):
+ issues=[]
+ for index,case in enumerate(record.get('cases',[]),1):
+  evidence=case.get('source_evidence')
+  if not evidence:
+   issues.append(f'case {index} predates evidence-quote validation')
+   continue
+  citations=set(case.get('source_node_ids',[]))
+  source_parts=[];available_ids=set()
+  for source in record.get('sources',[]):
+   members={source.get('node_id')}
+   members.update(item.get('node_id') for item in source.get('included_nodes',[]))
+   available_ids.update(members)
+   if citations & members:source_parts.append(source.get('text',''))
+  if not citations or not citations<=available_ids:
+   issues.append(f'case {index} cites a node outside its saved source snapshot')
+  source=llm._normalise_quote('\n'.join(source_parts))
+  quote=llm._normalise_quote(evidence)
+  if not quote or quote not in source:
+   issues.append(f'case {index} evidence is absent from its saved source snapshot')
+  if llm._normalise_quote(case.get('expected_result',''))!=quote:
+   issues.append(f'case {index} expected result does not match its evidence quote')
+  numbers=set(re.findall(r'(?<![A-Za-z])\d+(?:\.\d+)?%?',source))
+  assertions=' '.join([case.get('title',''),*case.get('preconditions',[]),*case.get('steps',[])])
+  invented=set(re.findall(r'(?<![A-Za-z])\d+(?:\.\d+)?%?',llm._normalise_quote(assertions)))-numbers
+  if invented:issues.append(f'case {index} contains unsupported numeric values: {", ".join(sorted(invented))}')
+  if any(llm._asserts_outcome(step,case.get('source_evidence','')) for step in case.get('steps',[])):
+   issues.append(f'case {index} has an outcome assertion in its steps')
+ return {'grounding_valid':not issues,'grounding_warnings':issues}
 @app.post('/generations')
 def generate(inp:GenerateIn,db:Session=Depends(dbdep)):
  s=db.get(Selection,inp.selection_id)
@@ -176,13 +205,14 @@ def generate(inp:GenerateIn,db:Session=Depends(dbdep)):
  selected_nodes=[db.get(DocumentNode,i.node_id) for i in items]
  text='\n\n'.join(subtree_prompt(n) for n in selected_nodes)
  allowed_node_ids=[n.id for root in selected_nodes for n in subtree_nodes(root)]
- try:cases,model,attempts,provider=llm.generate(text,allowed_node_ids)
+ source_by_node={n.id:subtree_prompt(n) for root in selected_nodes for n in subtree_nodes(root)}
+ try:cases,model,attempts,provider=llm.generate(text,allowed_node_ids,source_by_node)
  except Exception as e:raise HTTPException(502,str(e))
  sources=[]
  for i,selected in zip(items,selected_nodes):
   sources.append({'node_id':i.node_id,'logical_id':i.node_logical_id,'heading':i.heading_snapshot,'content_hash':i.content_hash,'text':i.text_snapshot,'included_nodes':[{'node_id':n.id,'logical_id':n.logical_id,'heading':n.heading,'content_hash':n.content_hash} for n in subtree_nodes(selected)]})
  record={'id':str(uuid.uuid4()),'selection_id':s.id,'selection_name':s.name,'document_key':s.document_key,'source_version':db.get(DocumentVersion,s.document_version_id).version,'created_at':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(),'provider':provider,'model':model,'attempts':attempts,'sources':sources,'cases':[c.model_dump() for c in cases.cases]}
- store.put(record);return {**record,**generation_staleness(record,db)}
+ store.put(record);return {**record,**generation_staleness(record,db),**generation_grounding(record)}
 @app.get('/generations')
 def generations(selection_id:int|None=None,node_id:int|None=None,db:Session=Depends(dbdep)):
  records=store.read_all()
@@ -191,9 +221,9 @@ def generations(selection_id:int|None=None,node_id:int|None=None,db:Session=Depe
   n=db.get(DocumentNode,node_id)
   if not n:raise HTTPException(404,'node not found')
   records=[r for r in records if any(s['logical_id']==n.logical_id or any(m['logical_id']==n.logical_id for m in s.get('included_nodes',[])) for s in r['sources'])]
- return [{**r,**generation_staleness(r,db)} for r in records]
+ return [{**r,**generation_staleness(r,db),**generation_grounding(r)} for r in records]
 @app.get('/generations/{generation_id}')
 def generation(generation_id:str,db:Session=Depends(dbdep)):
  records=store.get(generation_id)
  if not records:raise HTTPException(404,'generation not found')
- r=records[0];return {**r,**generation_staleness(r,db)}
+ r=records[0];return {**r,**generation_staleness(r,db),**generation_grounding(r)}

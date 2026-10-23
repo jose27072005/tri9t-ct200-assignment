@@ -19,6 +19,8 @@ If you do not create a `.env` file, start with `uvicorn app.main:app --reload` a
 
 SQLite defaults to `./tri9t.db`; generated output defaults to `./generated_outputs.json`. Set `DATABASE_URL`, `OUTPUT_STORE`, `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL` as needed. The default LLM endpoint is Groq's OpenAI-compatible chat completions endpoint and the default model is `openai/gpt-oss-120b`, using strict JSON Schema output. The local `.env` is ignored by Git and must never be committed. Optional `LLM_FALLBACK_API_KEY`, `LLM_FALLBACK_BASE_URL`, and `LLM_FALLBACK_MODEL` configure one fallback-provider call after the primary retry. Generation needs at least one provider key; ingestion and browsing do not. Generated outputs are stored in an atomic JSON file per assignment allowance.
 
+Generation requires each case to quote evidence from a cited node and to use that exact quote as its expected result. Validation rejects unsupported numeric values, common outcome assertions, and device-output concepts absent from the cited evidence. This reduces unsupported claims; review procedure steps for executability and clinical appropriateness before using them. Older saved records are retained, but retrieval marks records that predate these checks with `grounding_valid: false` and a warning.
+
 ## API workflow
 
 Open `/docs` for the interactive API. Example commands:
@@ -56,4 +58,4 @@ Image-only pages fail explicitly unless `ocr:true`; OCR uses PyMuPDF, Pillow, py
 pytest -q
 ```
 
-The suite covers duplicate headings and parents, skipped numeric levels, repeated headers and page numbers, lettered and numbered lists, out-of-order section numbering, OCR of image-only pages, vector-table extraction, semantic sibling matching, invalid citations, bounded retry/fallback, and synthetic versioned API behavior. The actual v1/v2 manuals were also ingested through the API in an isolated SQLite database; a local generation stub verified pinned source text, changed-node diff, and stale-impact retrieval. This validates ingestion and traceability, not clinical correctness or live-provider output.
+The suite covers duplicate headings and parents, skipped numeric levels, repeated headers and page numbers, lettered and numbered lists, out-of-order section numbering, OCR of image-only pages, vector-table extraction, semantic sibling matching, invalid citations, evidence-grounding checks, bounded retry/fallback, and synthetic versioned API behavior. Both supplied manuals were parsed and compared locally, including the battery-life, inflation-step, alarm-timing, and added-section changes. A live Groq call against the uploaded CT200 v1 selection returned three cases with exact evidence quotes and was retrievable by generation ID. This validates API and traceability behavior; it is not clinical validation of generated tests.

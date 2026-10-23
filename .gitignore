@@ -5,6 +5,7 @@ __pycache__/
 .env
 *.db
 outputs/
+generated_outputs.json
 
 # Source manuals supplied for local validation; do not publish
 data/*.pdf

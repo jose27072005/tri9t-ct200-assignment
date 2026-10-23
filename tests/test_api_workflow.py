@@ -33,13 +33,14 @@ def test_versioned_selection_generation_and_staleness(tmp_path, monkeypatch):
 
     monkeypatch.setattr(main, "extract_pdf", parse_fixture)
 
-    def generated(text, node_ids):
+    def generated(text, node_ids, source_by_node=None):
         from app.llm import Cases
         records = [{
             "title": f"Pressure limit case {i}",
             "preconditions": ["Monitor is powered on"],
             "steps": ["Trigger the documented pressure condition", "Observe the display and cuff"],
-            "expected_result": "The monitor follows the selected pressure limit requirement.",
+            "expected_result": "Deflate within three seconds.",
+            "source_evidence": "Deflate within three seconds.",
             "source_node_ids": [node_ids[0]], "risk": "high"
         } for i in range(3)]
         return Cases(cases=records), "test-model", 1, "test-provider"
@@ -191,3 +192,12 @@ def test_semantic_sibling_match_preserves_identity_when_heading_is_renamed(tmp_p
         assert new["changed"] is True
 
     engine.dispose()
+
+
+def test_legacy_generation_without_evidence_is_marked_unvalidated():
+    legacy = {"cases": [{"expected_result": "The display changes."}], "sources": []}
+
+    status = main.generation_grounding(legacy)
+
+    assert status["grounding_valid"] is False
+    assert "predates evidence-quote validation" in status["grounding_warnings"][0]
