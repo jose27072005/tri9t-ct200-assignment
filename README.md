@@ -17,7 +17,7 @@ OCR also requires the Tesseract executable. On macOS install it with `brew insta
 
 If you do not create a `.env` file, start with `uvicorn app.main:app --reload` and configure any needed environment variables in your shell. OCR of image-only pages also needs the Tesseract executable.
 
-SQLite defaults to `./tri9t.db`; generated output defaults to `./generated_outputs.json`. Set `DATABASE_URL`, `OUTPUT_STORE`, `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL` as needed. The default LLM endpoint is Groq's OpenAI-compatible chat completions endpoint and the default model is `openai/gpt-oss-120b` (JSON mode supported). The local `.env` is ignored by Git and must never be committed. Optional `LLM_FALLBACK_API_KEY`, `LLM_FALLBACK_BASE_URL`, and `LLM_FALLBACK_MODEL` configure one fallback-provider call after the primary retry. Generation needs at least one provider key; ingestion and browsing do not. Generated outputs are stored in an atomic JSON file per assignment allowance.
+SQLite defaults to `./tri9t.db`; generated output defaults to `./generated_outputs.json`. Set `DATABASE_URL`, `OUTPUT_STORE`, `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL` as needed. The default LLM endpoint is Groq's OpenAI-compatible chat completions endpoint and the default model is `openai/gpt-oss-120b`, using strict JSON Schema output. The local `.env` is ignored by Git and must never be committed. Optional `LLM_FALLBACK_API_KEY`, `LLM_FALLBACK_BASE_URL`, and `LLM_FALLBACK_MODEL` configure one fallback-provider call after the primary retry. Generation needs at least one provider key; ingestion and browsing do not. Generated outputs are stored in an atomic JSON file per assignment allowance.
 
 ## API workflow
 

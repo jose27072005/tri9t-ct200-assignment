@@ -8,16 +8,32 @@ class TestCase(BaseModel):
  source_node_ids:list[int]=Field(min_length=1)
  risk:str=Field(pattern='^(low|medium|high)$')
 class Cases(BaseModel): cases:list[TestCase]=Field(min_length=3,max_length=5)
+GROQ_CASES_SCHEMA={
+ 'type':'object',
+ 'properties':{'cases':{'type':'array','items':{
+  'type':'object','properties':{
+   'title':{'type':'string'},
+   'preconditions':{'type':'array','items':{'type':'string'}},
+   'steps':{'type':'array','items':{'type':'string'}},
+   'expected_result':{'type':'string'},
+   'source_node_ids':{'type':'array','items':{'type':'integer'}},
+   'risk':{'type':'string','enum':['low','medium','high']},
+  },
+  'required':['title','preconditions','steps','expected_result','source_node_ids','risk'],
+  'additionalProperties':False,
+ }}},
+ 'required':['cases'],'additionalProperties':False,
+}
 def validate(payload,node_ids):
  obj=Cases.model_validate(payload)
  if any(not set(c.source_node_ids)<=set(node_ids) for c in obj.cases):raise ValueError('case cites a node outside selection')
  return obj
 def _call(url,key,model,text,correction=None):
- system='Generate 3-5 concrete, repeatable QA tests grounded only in supplied text. Return JSON object {"cases":[{title,preconditions,steps,expected_result,source_node_ids,risk}]}. Do not invent thresholds. If text is insufficient, use explicit observable expected behavior only.'
+ system='Generate 3-5 concrete, repeatable QA tests grounded only in supplied text. Return an object with a cases array. Each case must have title (string), preconditions (array of strings), steps (array of strings), expected_result (string), source_node_ids (array of integer IDs from the supplied text), and risk (low, medium, or high). Do not invent thresholds. If text is insufficient, use explicit observable expected behavior only.'
  user='Source nodes and exact text:\n'+text
  if correction:user+='\nYour previous response failed validation. Correct these issues: '+correction
- data=json.dumps({'model':model,'temperature':0,'response_format':{'type':'json_object'},'messages':[{'role':'system','content':system},{'role':'user','content':user}]}).encode()
- req=urllib.request.Request(url,data,{'Authorization':'Bearer '+key,'Content-Type':'application/json'})
+ data=json.dumps({'model':model,'temperature':0,'max_completion_tokens':2048,'response_format':{'type':'json_schema','json_schema':{'name':'ct200_qa_cases','strict':True,'schema':GROQ_CASES_SCHEMA}},'messages':[{'role':'system','content':system},{'role':'user','content':user}]}).encode()
+ req=urllib.request.Request(url,data,{'Authorization':'Bearer '+key,'Content-Type':'application/json','Accept':'application/json','User-Agent':'tri9t-ct200/1.0'})
  with urllib.request.urlopen(req,timeout=45) as res:raw=json.loads(res.read())
  return raw['choices'][0]['message']['content']
 
