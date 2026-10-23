@@ -100,6 +100,42 @@ def test_versioned_selection_generation_and_staleness(tmp_path, monkeypatch):
     engine.dispose()
 
 
+def test_table_retrieval_is_version_scoped_and_hashes_content(tmp_path, monkeypatch):
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    test_session = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(main, "SessionLocal", test_session)
+    monkeypatch.setattr(main, "init_db", lambda: Base.metadata.create_all(engine))
+    monkeypatch.setattr(store, "STORE", tmp_path / "generated.json")
+    source = "1 Safety\n1.1 Pressure response\nThe device deflates safely."
+    monkeypatch.setattr(main, "extract_pdf", lambda path, ocr=False: (parse_text(source), source))
+
+    def table_fixture(path):
+        threshold = "2 seconds" if "v1" in Path(path).name else "1.5 seconds"
+        return [{"page_number": 2, "heading_context": "Safety", "caption": None,
+                 "bbox": [10, 20, 100, 120], "rows": [["Action", "Limit"], ["Deflate", threshold]],
+                 "row_count": 2, "column_count": 2}]
+    monkeypatch.setattr(main, "extract_tables", table_fixture)
+
+    for version in ("v1", "v2"):
+        (tmp_path / f"manual_{version}.pdf").write_bytes(b"fixture")
+
+    with TestClient(main.app) as client:
+        for version in ("v1", "v2"):
+            response = client.post("/ingest", json={
+                "document_key": "table-versions", "version": version,
+                "path": str(tmp_path / f"manual_{version}.pdf")
+            })
+            assert response.status_code == 200
+        old = client.get("/documents/table-versions/tables?version=v1").json()
+        new = client.get("/documents/table-versions/tables?version=v2").json()
+        assert old[0]["rows"][1] == ["Deflate", "2 seconds"]
+        assert new[0]["rows"][1] == ["Deflate", "1.5 seconds"]
+        assert old[0]["content_hash"] != new[0]["content_hash"]
+
+    engine.dispose()
+
+
 def test_duplicate_headings_have_distinct_persisted_ids_and_parents(tmp_path, monkeypatch):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)

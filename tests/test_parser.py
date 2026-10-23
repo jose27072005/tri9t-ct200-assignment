@@ -1,4 +1,7 @@
-from app.parser import parse_text,flatten
+from app.parser import parse_text,flatten,norm
+
+def test_normalization_matches_compatibility_ligatures():
+    assert norm('General Speciﬁcations') == norm('General Specifications')
 
 def test_duplicate_headings_remain_distinct_and_keep_parents():
     tree=parse_text('1 Safety\nIntro.\n1.1 Warning\nFirst warning.\n2 Operation\n2.1 Warning\nSecond warning.')
