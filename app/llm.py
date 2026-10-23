@@ -26,10 +26,10 @@ def generate(text,node_ids):
  providers=[]
  primary_key=os.getenv('LLM_API_KEY')
  if primary_key:
-  providers.append(('primary',os.getenv('LLM_BASE_URL','https://api.groq.com/openai/v1/chat/completions'),primary_key,os.getenv('LLM_MODEL','llama-3.3-70b-versatile'),2))
+  providers.append(('primary',os.getenv('LLM_BASE_URL','https://api.groq.com/openai/v1/chat/completions'),primary_key,os.getenv('LLM_MODEL','openai/gpt-oss-120b'),2))
  fallback_key=os.getenv('LLM_FALLBACK_API_KEY')
  if fallback_key:
-  providers.append(('fallback',os.getenv('LLM_FALLBACK_BASE_URL','https://api.groq.com/openai/v1/chat/completions'),fallback_key,os.getenv('LLM_FALLBACK_MODEL','llama-3.3-70b-versatile'),1))
+  providers.append(('fallback',os.getenv('LLM_FALLBACK_BASE_URL','https://api.groq.com/openai/v1/chat/completions'),fallback_key,os.getenv('LLM_FALLBACK_MODEL','openai/gpt-oss-120b'),1))
  if not providers:raise RuntimeError('Configure LLM_API_KEY or LLM_FALLBACK_API_KEY')
  errors=[];attempts=0
  for provider,url,key,model,max_attempts in providers:
