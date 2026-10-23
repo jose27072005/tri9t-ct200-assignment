@@ -1,6 +1,6 @@
 # Tri9T AI internship assignment: CT-200 traceability backend
 
-FastAPI backend for CT-200 PDF ingestion, hierarchical browsing, immutable document versions, pinned selections, QA generation, provenance, and stale-impact queries. The provided assignment PDF was available, but its referenced `AI Internship Assignment Files - CT-200` package (including `ct200_manual_v1.pdf` and `ct200_manual_v2.pdf`) was not attached or present in this workspace. No manual ingestion or v1-to-v2 results are claimed. Add both PDFs under `data/` before running the documented workflow.
+FastAPI backend for CT-200 PDF ingestion, hierarchical browsing, immutable document versions, pinned selections, QA generation, provenance, and stale-impact queries. The supplied CT-200 manuals are locally available as `data/ct200_manual_v1.pdf` and `data/ct200_manual_v2.pdf`. They are excluded from Git because they are source materials, not project deliverables. The parser has been exercised on both manuals; observed findings and limitations are in `docs/APPROACH.md`.
 
 ## Setup
 
@@ -54,4 +54,4 @@ Image-only pages fail explicitly unless `ocr:true`; OCR uses PyMuPDF, Pillow, py
 pytest -q
 ```
 
-Tests cover duplicate headings under separate parents, skipped numeric levels, repeated running headers/page numbers, lettered lists, invalid LLM citations, bounded retry/fallback, and a synthetic v1 → selection → generation → v2 → stale retrieval flow. They use synthetic structures because the assignment PDF does not enumerate its “irregularities listed above” and the actual CT-200 data package is missing. They are not validation results on the manuals.
+The suite covers duplicate headings and parents, skipped numeric levels, repeated headers and page numbers, lettered and numbered lists, out-of-order section numbering, OCR of image-only pages, semantic sibling matching, invalid citations, bounded retry/fallback, and synthetic versioned API behavior. The actual v1/v2 manuals were also ingested through the API in an isolated SQLite database; a local generation stub verified pinned source text, changed-node diff, and stale-impact retrieval. This validates ingestion and traceability, not clinical correctness or live-provider output.

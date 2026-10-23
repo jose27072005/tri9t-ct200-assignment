@@ -14,4 +14,4 @@ The repository includes the FastAPI backend, CT-200 document/version APIs, pinne
 Best,
 [Your name]
 
-> Replace the repository URL after publishing the local Git repository. This draft is not ready to send until the source CT-200 manuals have also been added and validated against the implementation.
+> Add the public repository URL after it is created. The manuals were validated locally and are intentionally excluded from the public repository. Review the final link and replace the name placeholder before sending.
