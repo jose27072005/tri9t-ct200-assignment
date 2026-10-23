@@ -8,3 +8,5 @@ outputs/
 
 # Source manuals supplied for local validation; do not publish
 data/*.pdf
+
+.DS_Store
